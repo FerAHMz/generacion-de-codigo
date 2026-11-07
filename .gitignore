@@ -19,3 +19,6 @@ out/
 *.svg
 *.png
 !docs/**/*.png
+
+# Simulador MIPS (make mars)
+tools/

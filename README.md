@@ -1,10 +1,11 @@
-# Compiscript — Generación de Código Intermedio
+# Compiscript — Generación de Código MIPS
 
-**Video de demostración:** <https://youtu.be/PEBvcj3bur4>
-
-Proyecto 2 del curso **Construcción de Compiladores** (Universidad del Valle de Guatemala).
+Proyecto 3 del curso **Construcción de Compiladores** (Universidad del Valle de Guatemala).
 Compilador de **Compiscript** (subset de TypeScript) construido con **ANTLR 4.13.1** y
-**Python 3**, en dos pasadas sobre el mismo árbol:
+**Python 3**. Esta fase traduce el código de tres direcciones del Proyecto 2 a
+**MIPS32** y lo ejecuta en el simulador **MARS 4.5**.
+
+Parte de las dos pasadas del Proyecto 2 sobre el mismo árbol:
 
 1. **Análisis semántico** (Proyecto 1): tipos, ámbitos y tabla de símbolos. Si hay
    errores, se reportan y no se genera código.
@@ -12,7 +13,12 @@ Compilador de **Compiscript** (subset de TypeScript) construido con **ANTLR 4.13
    temporales y una tabla de símbolos extendida con direcciones, registros de
    activación y layout de objetos.
 
+3. **Generación de MIPS** (Proyecto 3, `compiscript/mips/`): secuencias de llamada y
+   retorno, asignación de registros con `getReg()` (linear scan o solo pila) y
+   traducción de cada instrucción TAC. El `.asm` se ejecuta en MARS.
+
 El diseño del lenguaje intermedio está en [docs/LENGUAJE_INTERMEDIO.md](docs/LENGUAJE_INTERMEDIO.md).
+Video del Proyecto 2: <https://youtu.be/PEBvcj3bur4>.
 
 **Integrantes:** Fernando Hernández · Felipe Aguilar · Fernando Rueda
 
@@ -20,6 +26,7 @@ El diseño del lenguaje intermedio está en [docs/LENGUAJE_INTERMEDIO.md](docs/L
 
 ```bash
 make venv                        # crea .venv e instala dependencias
+make mars                        # descarga MARS 4.5 en tools/ (requiere Java)
 make run F=program/program.cps   # analiza un archivo (.cps)
 .venv/bin/python Driver.py program/program.cps --tac       # imprime el TAC numerado
 .venv/bin/python Driver.py program/program.cps --runtime   # registros de activación y clases
@@ -101,6 +108,14 @@ Dockerfile, commands/, antlr-4.13.1-complete.jar   entorno Docker del curso
 * [Rúbrica del Proyecto 1: regla → tests → demo](docs/RUBRICA_TESTS.md)
 
 ## División del trabajo
+
+### Proyecto 3 — Generación de código MIPS
+
+| Integrante | Porción | Estado |
+|---|---|---|
+| Fernando Hernández | Base del proyecto, programa MIPS y despacho por instrucción (`mips/asm.py`, `mips/translator.py`), segmento de datos y acceso a variables (`mips/memory.py`), `getReg()` con linear scan y modo pila (`mips/regs.py`), secuencias de llamada y retorno, prólogo y epílogo (`mips/calls.py`). | En progreso |
+| Felipe Aguilar | Traducción de instrucciones: aritmética entera y float, relacionales y saltos, `print`, arreglos, objetos y vtables. | Pendiente |
+| Fernando Rueda | Runtime en MIPS (strings, conversión a texto, excepciones), ejecución en MARS, Driver, IDE, pruebas de extremo a extremo y documentación final. | Pendiente |
 
 ### Proyecto 2 — Generación de código intermedio
 
