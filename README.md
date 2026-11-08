@@ -89,6 +89,8 @@ compiscript/
                             intérprete de TAC (interp.py)
   codegen/                  pipeline compile_source y generador TAC por mixins:
                             expressions, control_flow, functions y classes
+  mips/                     TAC → MIPS32: programa (asm.py), despacho (translator.py),
+                            getReg (regs.py), variables (memory.py), llamadas (calls.py)
   tree_viz.py               árbol en texto / LISP / JSON / Graphviz
 Driver.py                   línea de comandos (--tac, --out, --runtime, --run)
 ide/                        IDE web (Flask + CodeMirror): TAC, registros de activación y ejecución
@@ -101,6 +103,7 @@ Dockerfile, commands/, antlr-4.13.1-complete.jar   entorno Docker del curso
 
 ## Documentación
 
+* [Generación de MIPS: llamadas, getReg() y cómo agregar instrucciones](docs/MIPS.md)
 * [Lenguaje intermedio: instrucciones, convenciones y esquemas](docs/LENGUAJE_INTERMEDIO.md)
 * [Arquitectura de la implementación](docs/ARQUITECTURA.md)
 * [Cómo ejecutar el compilador](docs/EJECUCION.md)
@@ -113,7 +116,7 @@ Dockerfile, commands/, antlr-4.13.1-complete.jar   entorno Docker del curso
 
 | Integrante | Porción | Estado |
 |---|---|---|
-| Fernando Hernández | Base del proyecto, programa MIPS y despacho por instrucción (`mips/asm.py`, `mips/translator.py`), segmento de datos y acceso a variables (`mips/memory.py`), `getReg()` con linear scan y modo pila (`mips/regs.py`), secuencias de llamada y retorno, prólogo y epílogo (`mips/calls.py`). | En progreso |
+| Fernando Hernández | Base del proyecto, programa MIPS y despacho por instrucción (`mips/asm.py`, `mips/translator.py`), segmento de datos y acceso a variables (`mips/memory.py`), `getReg()` con linear scan y modo pila (`mips/regs.py`), secuencias de llamada y retorno, prólogo y epílogo (`mips/calls.py`), pruebas `tests/mips/` de registros, memoria, llamadas y modos, `docs/MIPS.md`. | Terminado |
 | Felipe Aguilar | Traducción de instrucciones: aritmética entera y float, relacionales y saltos, `print`, arreglos, objetos y vtables. | Pendiente |
 | Fernando Rueda | Runtime en MIPS (strings, conversión a texto, excepciones), ejecución en MARS, Driver, IDE, pruebas de extremo a extremo y documentación final. | Pendiente |
 
