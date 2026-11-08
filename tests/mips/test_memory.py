@@ -87,7 +87,7 @@ def test_missing_static_link_is_an_error():
 
 
 @requires_mars
-@pytest.mark.parametrize("mode", MODES[:1])
+@pytest.mark.parametrize("mode", MODES)
 def test_globals_of_every_type_in_mars(mode):
     src = """
     let i: integer = 41;

@@ -85,7 +85,7 @@ class MipsTranslator(MemoryMixin, CallsMixin):
     # que las use guarda $ra aunque no llame a otras funciones de Compiscript.
     RUNTIME_CALL_OPS = {Op.CONCAT, Op.PRINT, Op.ALLOC, Op.NEW}
 
-    def __init__(self, program: TACProgram, table: SymbolTable, regalloc: str = "stack"):
+    def __init__(self, program: TACProgram, table: SymbolTable, regalloc: str = "linear"):
         self.program = program
         self.table = table
         self.asm = MipsProgram()
@@ -142,7 +142,7 @@ class MipsTranslator(MemoryMixin, CallsMixin):
             self.asm.add_routine("__raise", RAISE_PROVISIONAL)
 
 
-def generate_mips(program: TACProgram, table: SymbolTable, regalloc: str = "stack") -> MipsProgram:
+def generate_mips(program: TACProgram, table: SymbolTable, regalloc: str = "linear") -> MipsProgram:
     """Traduce un programa TAC (con su tabla de símbolos ya con direcciones) a MIPS."""
     return MipsTranslator(program, table, regalloc).translate()
 

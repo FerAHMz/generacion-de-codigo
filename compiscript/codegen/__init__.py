@@ -24,7 +24,7 @@ from .generator import TACGenerator
 class CompileResult:
     analysis: AnalysisResult
     program: Optional[TACProgram]
-    regalloc: str = "stack"
+    regalloc: str = "linear"
     _mips: Optional[object] = field(default=None, repr=False)
 
     @property
@@ -79,7 +79,7 @@ class CompileResult:
 
 
 def compile_source(source: str, errors: Optional[ErrorCollector] = None,
-                   regalloc: str = "stack") -> CompileResult:
+                   regalloc: str = "linear") -> CompileResult:
     """Pasada 1 (análisis semántico) y, solo si no hubo errores, pasada 2 (TAC).
     El MIPS se genera a pedido (`result.asm`) con el modo de registros `regalloc`."""
     analysis = analyze(source, errors)
@@ -89,7 +89,7 @@ def compile_source(source: str, errors: Optional[ErrorCollector] = None,
 
 
 def compile_file(path: str, errors: Optional[ErrorCollector] = None,
-                 regalloc: str = "stack") -> CompileResult:
+                 regalloc: str = "linear") -> CompileResult:
     with open(path, encoding="utf-8") as fh:
         return compile_source(fh.read(), errors, regalloc)
 

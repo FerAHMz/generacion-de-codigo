@@ -1,7 +1,7 @@
 """Generación de código MIPS32 a partir del TAC (tercera fase del compilador).
 
     from compiscript.codegen import compile_source
-    res = compile_source(src, regalloc="stack")
+    res = compile_source(src, regalloc="linear")   # o "stack"
     res.asm            # texto del .asm (None si hubo errores)
 
     from compiscript.mips import generate_mips
