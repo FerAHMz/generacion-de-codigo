@@ -11,6 +11,7 @@ Módulos:
   asm.py         programa MIPS (.data, .text, rutinas del runtime)
   translator.py  recorrido del TAC y despacho por instrucción
   regs.py        getReg(): registros de cada temporal (modo pila / linear scan)
+  memory.py      área global y acceso a variables (static links)
   calls.py       marcos, prólogo/epílogo y secuencias de llamada
 """
 

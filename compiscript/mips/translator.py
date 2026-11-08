@@ -19,10 +19,11 @@ from typing import Dict, Optional, Tuple
 
 from ..ir.liveness import function_ranges
 from ..ir.runtime import MESSAGES
-from ..ir.tac import Op, Quad, TACProgram, Var
+from ..ir.tac import Op, Quad, TACProgram
 from ..symbols import ActivationRecord, SymbolTable
 from .asm import MipsProgram
 from .calls import CallsMixin
+from .memory import MemoryMixin
 from .regs import RegisterManager
 
 # Nombre del handler de cada instrucción TAC: op_<nombre>.
@@ -79,7 +80,7 @@ __raise:                                # $a0 = mensaje del error
 """
 
 
-class MipsTranslator(CallsMixin):
+class MipsTranslator(MemoryMixin, CallsMixin):
     # Instrucciones que llaman con `jal` a una rutina del runtime: una función
     # que las use guarda $ra aunque no llame a otras funciones de Compiscript.
     RUNTIME_CALL_OPS = {Op.CONCAT, Op.PRINT, Op.ALLOC, Op.NEW}
@@ -118,14 +119,6 @@ class MipsTranslator(CallsMixin):
     def function_quads(self, label: Optional[str] = None):
         lo, hi = self.functions[label or self.function]
         return self.program.quads[lo:hi + 1]
-
-    # --------------------------------------------------- memoria (variables)
-
-    def load_var(self, var: Var, reg: str) -> None:
-        raise MipsNotImplemented(f"acceso a la variable {var.name} ({var.location})")
-
-    def store_var(self, reg: str, var: Var) -> None:
-        raise MipsNotImplemented(f"acceso a la variable {var.name} ({var.location})")
 
     # ------------------------------------------------------------ utilidades
 
