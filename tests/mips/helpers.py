@@ -24,7 +24,7 @@ import pytest
 
 from compiscript.codegen import compile_source
 from compiscript.ir.interp import run as interp_run
-from compiscript.mips import MipsTranslator
+from compiscript.mips import MipsNotImplemented, MipsTranslator
 
 ROOT = Path(__file__).resolve().parents[2]
 MARS_JAR = Path(os.environ.get("MARS_JAR", ROOT / "tools" / "Mars4_5.jar"))
@@ -84,6 +84,8 @@ def run_asm(asm: str, steps: int = 2_000_000, registers: Sequence[str] = ()) -> 
 
 def _binary(mnemonic):
     def handler(self, q, pos):
+        if any(o.is_float for o in (q.arg1, q.arg2, q.result) if o is not None):
+            raise MipsNotImplemented(f"aritmética float en el soporte de pruebas: {q.text()}")
         a = self.regs.load(q.arg1, pos)
         b = self.regs.load(q.arg2, pos)
         d = self.regs.dest(q.result, pos)
@@ -94,6 +96,8 @@ def _binary(mnemonic):
 
 def _branch(mnemonic):
     def handler(self, q, pos):
+        if q.arg1.is_float or q.arg2.is_float:
+            raise MipsNotImplemented(f"comparación float en el soporte de pruebas: {q.text()}")
         a = self.regs.load(q.arg1, pos)
         b = self.regs.load(q.arg2, pos)
         self.asm.emit(mnemonic, a, b, q.result.name)
