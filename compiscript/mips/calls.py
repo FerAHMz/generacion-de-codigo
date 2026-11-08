@@ -209,10 +209,18 @@ class CallsMixin:
                           "$f0" if q.result.is_float else "$v0", comment="valor de retorno")
             self.regs.store(d, q.result, pos)
 
-    def frame_layout(self, label: str, record: ActivationRecord) -> FrameLayout:
-        return FrameLayout(label, record, self.regs.spill_words(label))
-
     # ------------------------------------------------------- func_begin / end
+
+    def frame_layout(self, label: str, record: ActivationRecord) -> FrameLayout:
+        extra_ra = False
+        if record is not self.table.main and not record.needs_return_address:
+            extra_ra = any(q.op == Op.CALL or q.op in self.RUNTIME_CALL_OPS
+                           for q in self.function_quads(label))
+        return FrameLayout(label, record, self.regs.spill_words(label), extra_ra,
+                           self.regs.callee_saved(label))
+
+    def epilogue_label(self, label: Optional[str] = None) -> str:
+        return f"__ret_{label or self.function}"
 
     def op_func_begin(self, q: Quad, pos: int) -> None:
         label = str(q.arg1)
@@ -222,23 +230,67 @@ class CallsMixin:
         lo, hi = self.functions[label]
         self.function, self.record = label, record
         self.regs.enter_function(label, lo, hi, record)
-        self.frame = self.frame_layout(label, record)
-        if record is not self.table.main:
-            from .translator import MipsNotImplemented
-            raise MipsNotImplemented(f"prólogo de la función {label}")
+        self.frame = frame = self.frame_layout(label, record)
         self.asm.blank()
-        self.asm.label("main", comment=f"func_begin main, {q.arg2}")
-        self.asm.emit("move", "$fp", "$sp")
-        if self.frame.reserve:
-            self.asm.emit("addiu", "$sp", "$sp", -self.frame.reserve,
-                          comment=f"spill: {self.frame.spill_words} palabra(s)")
+        self.asm.label(label, comment=f"func_begin {label}, {q.arg2}")
+        if record is self.table.main:
+            self.asm.emit("move", "$fp", "$sp")
+        else:
+            if record.needs_return_address:
+                self.asm.emit("addiu", "$sp", "$sp", -2 * WORD)
+                self.asm.emit("sw", "$ra", f"{WORD}($sp)", comment="dirección de retorno")
+            else:
+                self.asm.emit("addiu", "$sp", "$sp", -WORD)
+            self.asm.emit("sw", "$fp", "0($sp)", comment="control link")
+            self.asm.emit("move", "$fp", "$sp")
+        if frame.reserve:
+            self.asm.emit("addiu", "$sp", "$sp", -frame.reserve,
+                          comment=f"locales {frame.spill_base} B, spill {frame.spill_words}, "
+                                  f"$s {len(frame.saved_s)}")
+        if frame.extra_ra:
+            self.asm.emit("sw", "$ra", f"{frame.ra_offset}($fp)", comment="$ra (llama al runtime)")
+        for i, reg in enumerate(frame.saved_s):
+            self.asm.emit("sw", reg, f"{frame.s_offset(i)}($fp)", comment="callee-saved")
+
+    def op_return(self, q: Quad, pos: int) -> None:
+        if q.arg1 is not None:
+            reg = self.regs.load(q.arg1, pos)
+            if q.arg1.is_float:
+                self.asm.emit("mov.s", "$f0", reg, comment="valor de retorno")
+            else:
+                self.asm.emit("move", "$v0", reg, comment="valor de retorno")
+        if self.record is self.table.main:
+            self.exit_program()
+            return
+        nxt = self.program.quads[pos + 1] if pos + 1 < len(self.program) else None
+        if nxt is None or nxt.op != Op.FUNC_END:
+            self.asm.emit("j", self.epilogue_label())
 
     def op_func_end(self, q: Quad, pos: int) -> None:
-        self.asm.comment("func_end main")
+        frame, record = self.frame, self.record
+        if record is self.table.main:
+            self.asm.comment("func_end main")
+            self.exit_program()
+        else:
+            self.asm.label(self.epilogue_label(), comment=f"func_end {self.function}")
+            for i, reg in enumerate(frame.saved_s):
+                self.asm.emit("lw", reg, f"{frame.s_offset(i)}($fp)")
+            if frame.extra_ra:
+                self.asm.emit("lw", "$ra", f"{frame.ra_offset}($fp)")
+            self.asm.emit("move", "$sp", "$fp")
+            self.asm.emit("lw", "$fp", "0($sp)", comment="control link")
+            if record.needs_return_address:
+                self.asm.emit("lw", "$ra", f"{WORD}($sp)")
+                self.asm.emit("addiu", "$sp", "$sp", 2 * WORD)
+            else:
+                self.asm.emit("addiu", "$sp", "$sp", WORD)
+            self.asm.emit("jr", "$ra")
+        self.function, self.record = None, None
+
+    def exit_program(self) -> None:
         self.asm.emit("move", "$sp", "$fp")
         self.asm.emit("li", "$v0", 10)
         self.asm.emit("syscall", comment="exit")
-        self.function, self.record = None, None
 
 
 __all__ = ["CallsMixin", "FrameLayout", "PendingCall"]

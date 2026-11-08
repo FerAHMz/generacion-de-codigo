@@ -182,3 +182,162 @@ def test_virtual_call_emits_jalr_with_the_method_address():
     ins = tr.asm.instructions()
     assert [o for o, _ in ins].count("jalr") == 1
     assert ("addiu", ("$sp", "$sp", "-8")) in ins     # this + n
+
+
+# ------------------------------------------------------- prólogo / epílogo
+
+def full(src, mode="linear", **pools):
+    res = compile_ok(src)
+    tr = translator_class()(res.program, res.table, mode)
+    if pools:
+        tr.regs = RegisterManager(tr, res.program, res.table, mode, **pools)
+    return res, tr.translate()
+
+
+def block(prog, label):
+    lines = prog.text_lines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(f"{label}:"))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i] == ""), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_prologue_saves_ra_only_in_non_leaf_functions():
+    res, prog = full(NESTED)
+    a = block(prog, "a")          # llama a b: guarda $ra en el encabezado
+    c = block(prog, "a_b_c")      # llama a b: también
+    assert "sw $ra, 4($sp)" in a and "sw $ra, 4($sp)" in c
+    leaf = block(full("function k(): integer { return 1; }\nprint(k());")[1], "k")
+    assert "$ra" not in leaf.replace("jr $ra", "")
+    assert "sw $fp, 0($sp)" in leaf and "move $fp, $sp" in leaf
+
+
+def test_leaf_that_calls_the_runtime_saves_ra_in_its_frame():
+    src = "function k(): integer { print(1); return 1; }\nprint(k());"
+    res, prog = full(src)
+    assert not res.table.record_of("k").needs_return_address
+    k = block(prog, "k")
+    assert "$ra (llama al runtime)" in k and "lw $ra" in k
+
+
+def test_epilogue_restores_s_registers_saved_in_prologue():
+    src = FACT_SRC
+    res, prog = full(src)
+    f = block(prog, "fact")
+    saved = [ln.split()[1].rstrip(",") for ln in f.splitlines() if "callee-saved" in ln]
+    assert saved and all(f"lw {r}," in f for r in saved)
+
+
+def test_return_jumps_to_the_epilogue_unless_it_is_last():
+    _, prog = full(FACT_SRC)
+    f = block(prog, "fact")
+    assert f.count("j __ret_fact") == 1          # el return del caso base
+    assert "__ret_fact:" in "\n".join(prog.text_lines())
+
+
+FACT_SRC = """
+function fact(n: integer): integer {
+  if (n <= 1) { return 1; }
+  return n * fact(n - 1);
+}
+print(fact(10));
+"""
+
+PROGRAMS = {
+    "factorial": FACT_SRC,
+    "fibonacci": """
+function fib(n: integer): integer {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+print(fib(15));
+print(fib(10) + fib(8) * fib(5));
+""",
+    "recursion_mutua": """
+function esPar(n: integer): boolean {
+  if (n == 0) { return true; }
+  return esImpar(n - 1);
+}
+function esImpar(n: integer): boolean {
+  if (n == 0) { return false; }
+  return esPar(n - 1);
+}
+print(esPar(10));
+print(esImpar(7));
+print(esPar(7));
+""",
+    "closure_modifica_capturada": NESTED,
+    "contador": """
+function crear(): integer {
+  let cuenta: integer = 0;
+  function siguiente(): integer { cuenta = cuenta + 1; return cuenta; }
+  siguiente(); siguiente();
+  return siguiente();
+}
+print(crear());
+""",
+    "argumentos_boolean": FLAGS,
+    "argumentos_float": """
+function elegir(a: float, b: float, primero: boolean): float {
+  if (primero) { return a; }
+  return b;
+}
+print(elegir(2.5, 0.75, true));
+print(elegir(2.5, 0.75, false));
+""",
+    "valores_vivos_en_llamadas": """
+function g(x: integer): integer { return x + 1; }
+let y: integer = 2;
+print(y * 3 + g(y) * (y + g(g(y))));
+""",
+    "recursion_profunda": """
+function suma(n: integer): integer {
+  if (n == 0) { return 0; }
+  return n + suma(n - 1);
+}
+print(suma(2000));
+""",
+    "funcion_hoja_que_imprime": """
+function k(n: integer): integer { print(n); return n + 1; }
+print(k(k(1)));
+""",
+    "muchos_argumentos": """
+function m(a: integer, b: integer, c: integer, d: integer, e: integer, f: integer): integer {
+  return a - b + c - d + e - f;
+}
+print(m(10, 1, 20, 2, 30, 3));
+""",
+}
+
+
+@requires_mars
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("name", sorted(PROGRAMS))
+def test_programs_with_calls_match_the_interpreter(name, mode):
+    run, expected = run_source(PROGRAMS[name], mode)
+    assert run.exit_code == 0
+    assert run.lines == expected
+
+
+@requires_mars
+@pytest.mark.parametrize("name", ["fibonacci", "valores_vivos_en_llamadas", "closure_modifica_capturada"])
+def test_same_output_with_only_two_t_registers(name):
+    res, prog = full(PROGRAMS[name], int_pool=("$t0", "$t1"), float_pool=("$f4",))
+    from compiscript.ir.interp import run as interp_run
+    assert run_asm(prog.text()).lines == interp_run(res.program, res.table)
+
+
+@requires_mars
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("name", sorted(PROGRAMS))
+def test_stack_and_frame_pointer_are_balanced(name, mode):
+    _, prog = full(PROGRAMS[name], mode)
+    text = prog.text()
+    main = block(prog, "main").splitlines()
+    reserve = 0
+    if len(main) > 2 and main[2].strip().startswith("addiu $sp, $sp, -"):
+        reserve = -int(main[2].split(",")[2].split("#")[0])
+    # Sin restaurar $sp desde $fp al terminar: $sp debe quedar donde lo dejó el prólogo de main.
+    text = text.replace("        move $sp, $fp\n        li $v0, 10", "        li $v0, 10")
+    run = run_asm(text, registers=["$sp", "$fp"])
+    assert run.registers["$fp"] == 0x7FFFEFFC
+    assert run.registers["$sp"] == 0x7FFFEFFC - reserve
