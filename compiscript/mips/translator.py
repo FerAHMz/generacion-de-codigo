@@ -25,6 +25,7 @@ from .asm import MipsProgram
 from .arith import ArithMixin
 from .calls import CallsMixin
 from .control import ControlMixin
+from .data_structs import DataStructsMixin
 from .memory import MemoryMixin
 from .regs import RegisterManager
 
@@ -82,7 +83,7 @@ __raise:                                # $a0 = mensaje del error
 """
 
 
-class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin):
+class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin, DataStructsMixin):
     # Instrucciones que llaman con `jal` a una rutina del runtime: una función
     # que las use guarda $ra aunque no llame a otras funciones de Compiscript.
     RUNTIME_CALL_OPS = {Op.CONCAT, Op.PRINT, Op.ALLOC, Op.NEW}
