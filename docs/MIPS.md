@@ -267,3 +267,149 @@ extremo a extremo la marcan como skip.
 
 Las pruebas que ejecutan MARS se saltan si no hay Java o `tools/Mars4_5.jar`
 (`make mars`).
+
+---
+
+## 5. Traducción TAC → MIPS
+
+Cada instrucción TAC tiene su handler en un mixin de `compiscript/mips/`:
+
+| Módulo | Instrucciones |
+|---|---|
+| `arith.py` | `+ - * / %`, `minus`, `not`, `=`, `int_to_float` |
+| `control.py` | `< <= > >= == !=`, `label`, `goto`, `if`, `ifFalse`, `if<` … `if!=`, `print` |
+| `data_structs.py` | `alloc`, `len`, `[]`, `[]=` |
+| `objects.py` | vtables en `.data`, `new`, `getf`, `setf`, `method` |
+
+En las secuencias, `a`, `b`, `i`, `x` y `obj` son los registros que entrega
+`RegisterManager.load` (un registro asignado o un scratch ya cargado) y `t` el
+de `RegisterManager.dest`; si el resultado vive en memoria, `store` agrega el
+`sw`/`s.s`. Además de los scratch, los handlers usan registros que nunca
+guardan un temporal entre instrucciones: `$v1` (longitud, dirección del
+elemento, vtable, bits del divisor float), `$f2` (cociente de `%` float) y
+`$a0`, `$a1`, `$v0` en syscalls y en la comparación de strings.
+
+### 5.1 Tabla de traducción
+
+| TAC | Secuencia MIPS |
+|---|---|
+| `t = a + b` · `-` · `*` | `addu`/`subu`/`mul t, a, b`; float: `add.s`/`sub.s`/`mul.s t, a, b` |
+| `t = a / b` | `bnez b, ok` · `la $a0, __err_division_by_zero` · `j __raise` · `ok:` · `div a, b` · `mflo t`; float: revisión con `mfc1 $v1, b` + `sll $v1, $v1, 1` (ignora el signo de `-0.0`) y `div.s t, a, b` |
+| `t = a % b` | revisión de cero · `div a, b` · `mfhi t` (signo del dividendo: `7 % -2 == 1`, como el intérprete) |
+| `t = minus a` | `subu t, $zero, a`; float: `neg.s t, a` |
+| `t = not a` | `xori t, a, 1` |
+| `x = y` | `move` / `mov.s` si los dos están en registros; si no, `lw`/`lb`/`l.s` + `sw`/`sb`/`s.s` (constantes: `li`, `la` o `l.s` desde `.float` en `.data`) |
+| `t = int_to_float a` | `mtc1 a, t` · `cvt.s.w t, t` |
+| `t = a relop b` | `slt`/`sle`/`sgt`/`sge`/`seq`/`sne t, a, b`; float: `c.lt.s`/`c.le.s`/`c.eq.s` (para `>`/`>=` con los operandos invertidos) · `li t, 1` · `bc1t fin` (`bc1f` en `!=`) · `li t, 0` · `fin:` |
+| `a == b` / `a != b` con strings | recorrido en línea byte a byte con `lb` (misma dirección → iguales; uno null → distintos) |
+| `L:` · `goto L` | `L:` · `j L` |
+| `if a goto L` · `ifFalse a goto L` | `bnez a, L` · `beqz a, L` |
+| `if a relop b goto L` | `blt`/`ble`/`bgt`/`bge`/`beq`/`bne a, b, L`; float: `c.xx.s` + `bc1t`/`bc1f L` |
+| `print x` | integer: `move $a0, x` + syscall 1 · float: `mov.s $f12, x` + syscall 2 · string: `move $a0, x` (`"null"` si es 0) + syscall 4 · boolean: `la $a0, "true"`/`"false"` según `bnez` + syscall 4 · después `li $a0, 10` + syscall 11 |
+| `t = alloc n` | `li $a0, 4 + 4n` (o `sll $a0, n, 2` + `addiu $a0, $a0, 4`) · `li $v0, 9` · `syscall` · `sw n, 0($v0)` · `move t, $v0` |
+| `t = len a` | revisión de null · `lw t, 0(a)` |
+| `t = a[i]` | `bnez a, ok` (null) · `lw $v1, 0(a)` · `sltu $v1, i, $v1` · `bnez $v1, ok2` (0 ≤ i < len; un `i` negativo es enorme sin signo) · `sll $v1, i, 2` · `addu $v1, a, $v1` · `lw t, 4($v1)` (`l.s` si es float) |
+| `a[i] = x` | mismas revisiones y dirección · `sw x, 4($v1)` (`s.s` si es float) |
+| vtables | `__vtable_C: .word C_m1, Padre_m2, …` en el orden de `ClassLayout.vtable` (`.word 0` si no tiene métodos) |
+| `t = new C, size` | `li $a0, size` · `li $v0, 9` · `syscall` · `la $v1, __vtable_C` · `sw $v1, 0($v0)` · `move t, $v0` |
+| `t = [obj + off]` | revisión de null · `lw t, off(obj)` (`lb` si el atributo es boolean, `l.s` si es float) |
+| `[obj + off] = x` | revisión de null · `sw x, off(obj)` (`sb` / `s.s`) |
+| `t = method obj, m` | revisión de null · `lw $v1, 0(obj)` · `lw t, 4·slot($v1)` con `slot = ClassLayout.method_slot(m)` del tipo estático de `obj`; el `call t, n` siguiente hace `jalr t` |
+
+Las revisiones salen de `runtime.checks_for(op)` y saltan a `__raise` con el
+mensaje de `runtime.MESSAGES` en `$a0` (`self.runtime_error`).
+
+### 5.2 Ejemplo real (modo linear)
+
+```cps
+let xs = [10, 20];
+let i = 1;
+let f: float = i * 2.5;
+print(xs[i] / 3);
+if (f > 2.0) { print(true); }
+class A { let x: integer = 1; function g(): integer { return this.x; } }
+let a: A = new A();
+print(a.g());
+```
+
+Extracto del `.asm` que genera `compile_source(src, regalloc="linear").asm`:
+
+```
+__vtable_A: .word A_g                   # vtable de A (1 métodos)
+...
+        # t1 = alloc 2
+        li $a0, 12                      # 2 elementos + longitud
+        li $v0, 9
+        syscall                         # sbrk
+        li $v1, 2
+        sw $v1, 0($v0)                  # longitud
+        move $t0, $v0
+        ...
+        # t1 = int_to_float t1
+        mtc1 $t0, $f4
+        cvt.s.w $f4, $f4
+        # t1 = t1 * 2.5
+        l.s $f30, __flt_5               # 2.5
+        mul.s $f4, $f4, $f30
+        ...
+        # t1 = t1[t2]
+        bnez $t0, __ok_6
+        la $a0, __err_null_reference
+        j __raise                       # acceso a una referencia null
+__ok_6:
+        lw $v1, 0($t0)                  # longitud
+        sltu $v1, $t1, $v1              # 0 <= i < len
+        bnez $v1, __ok_7
+        la $a0, __err_index_out_of_bounds
+        j __raise                       # índice fuera de rango
+__ok_7:
+        sll $v1, $t1, 2
+        addu $v1, $t0, $v1
+        lw $t0, 4($v1)
+        # t1 = t1 / 3
+        li $t8, 3
+        bnez $t8, __ok_8
+        la $a0, __err_division_by_zero
+        j __raise                       # división entre cero
+__ok_8:
+        div $t0, $t8
+        mflo $t0
+        ...
+        # if t1 <= 2.0 goto L1
+        l.s $f30, __flt_9               # 2.0
+        c.le.s $f4, $f30
+        bc1t L1
+        ...
+        # t1 = new A, 8
+        li $a0, 8                       # new A
+        li $v0, 9
+        syscall                         # sbrk
+        la $v1, __vtable_A
+        sw $v1, 0($v0)                  # vtable
+        move $s0, $v0
+        ...
+        # t2 = method t1, g
+        bnez $t0, __ok_13
+        la $a0, __err_null_reference
+        j __raise                       # acceso a una referencia null
+__ok_13:
+        lw $v1, 0($t0)                  # vtable
+        lw $t1, 0($v1)                  # ranura 0: g
+        # param t1
+        addiu $sp, $sp, -4              # 1 argumento(s) para t2
+        sw $t0, 0($sp)                  # argumento 0
+        # t1 = call t2, 1
+        jalr $t1                        # método (despacho dinámico)
+```
+
+### 5.3 Pruebas
+
+| Archivo | Qué valida |
+|---|---|
+| `tests/mips/test_tr_arith.py` | `div` + `mflo`/`mfhi` después de la revisión de cero, mnemónicos enteros y float, `.float` en `.data`, `mtc1` + `cvt.s.w`, `xori`; en MARS `7 / -2 == -3`, `7 % -2 == 1`, desbordamiento de 32 bits, float, copias y división entre cero sin `try` |
+| `tests/mips/test_tr_control.py` | `slt`…`sne`, `c.xx.s` + `bc1t`/`bc1f`, saltos condicionales, syscalls de `print` por tipo; en MARS relacionales, corto circuito, if/else, bucles, break/continue, switch con fallthrough, ternario, `print` por tipo e igualdad de strings |
+| `tests/mips/test_tr_arrays.py` | `sbrk` de `4 + 4n` con la longitud en `[base]`, revisión de null e índice antes de `lw`/`sw`, `l.s`/`s.s` en float; en MARS foreach, matriz, arreglos float/boolean/string, arreglo como parámetro, índice fuera de rango (grande, negativo, escritura, matriz) y arreglo null |
+| `tests/mips/test_tr_objects.py` | vtables iguales a `ClassLayout.vtable`, `new` con `object_size` y la vtable en `[t + 0]`, `method` con `lw` de la vtable y de la ranura antes del `jalr`, `lb`/`sb` y `l.s`/`s.s` en atributos; en MARS despacho a la subclase (también en un nieto y desde un método del padre), listas enlazadas y `null` en `getf`, `setf` y `method` |
+
+Cada prueba de MARS corre en los modos `linear` y `stack` y compara con
+`interp.run`.
