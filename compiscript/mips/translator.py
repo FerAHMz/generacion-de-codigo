@@ -27,6 +27,7 @@ from .calls import CallsMixin
 from .control import ControlMixin
 from .data_structs import DataStructsMixin
 from .memory import MemoryMixin
+from .objects import ObjectsMixin
 from .regs import RegisterManager
 
 # Nombre del handler de cada instrucción TAC: op_<nombre>.
@@ -83,7 +84,8 @@ __raise:                                # $a0 = mensaje del error
 """
 
 
-class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin, DataStructsMixin):
+class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin, DataStructsMixin,
+                     ObjectsMixin):
     # Instrucciones que llaman con `jal` a una rutina del runtime: una función
     # que las use guarda $ra aunque no llame a otras funciones de Compiscript.
     RUNTIME_CALL_OPS = {Op.CONCAT, Op.PRINT, Op.ALLOC, Op.NEW}
