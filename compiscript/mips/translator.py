@@ -26,6 +26,7 @@ from .arith import ArithMixin
 from .calls import CallsMixin
 from .control import ControlMixin
 from .data_structs import DataStructsMixin
+from .exceptions import ERROR_PREFIX, ExceptionsMixin
 from .memory import MemoryMixin
 from .objects import ObjectsMixin
 from .regs import RegisterManager
@@ -47,8 +48,6 @@ OP_NAMES: Dict[str, str] = {
 }
 _RELOP_NAMES = {Op.LT: "lt", Op.LE: "le", Op.GT: "gt", Op.GE: "ge", Op.EQ: "eq", Op.NE: "ne"}
 
-ERROR_PREFIX = "Error en tiempo de ejecución: "
-
 
 def handler_name(op: str) -> str:
     """`op_add` para `+`, `op_if_lt` para `if<`, ..."""
@@ -65,28 +64,8 @@ class MipsNotImplemented(NotImplementedError):
     """Instrucción TAC que todavía no tiene traducción a MIPS."""
 
 
-# Rutina __raise provisional: imprime el mensaje de $a0 y termina con código 1.
-# La reemplaza la versión con pila de manejadores (try/catch).
-RAISE_PROVISIONAL = """
-__raise:                                # $a0 = mensaje del error
-        move $t8, $a0
-        la $a0, __err_prefix
-        li $v0, 4
-        syscall
-        move $a0, $t8
-        li $v0, 4
-        syscall
-        li $a0, 10
-        li $v0, 11
-        syscall
-        li $a0, 1
-        li $v0, 17                      # exit2: termina con código 1
-        syscall
-"""
-
-
 class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin, DataStructsMixin,
-                     ObjectsMixin, RuntimeLibMixin):
+                     ObjectsMixin, RuntimeLibMixin, ExceptionsMixin):
     # Instrucciones que llaman con `jal` a una rutina del runtime: una función
     # que las use guarda $ra aunque no llame a otras funciones de Compiscript.
     RUNTIME_CALL_OPS = {Op.CONCAT, Op.PRINT, Op.ALLOC, Op.NEW}
@@ -142,15 +121,10 @@ class MipsTranslator(MemoryMixin, CallsMixin, ArithMixin, ControlMixin, DataStru
         self.asm.emit("j", "__raise", comment=MESSAGES[kind])
         self.require_raise()
 
-    def require_raise(self) -> None:
-        if not self.asm.has_routine("__raise"):
-            self.asm.data("__err_prefix", ".asciiz", f'"{ERROR_PREFIX}"')
-            self.asm.add_routine("__raise", RAISE_PROVISIONAL)
-
 
 def generate_mips(program: TACProgram, table: SymbolTable, regalloc: str = "linear") -> MipsProgram:
     """Traduce un programa TAC (con su tabla de símbolos ya con direcciones) a MIPS."""
     return MipsTranslator(program, table, regalloc).translate()
 
 
-__all__ = ["MipsNotImplemented", "MipsTranslator", "OP_NAMES", "generate_mips", "handler_name"]
+__all__ = ["ERROR_PREFIX", "MipsNotImplemented", "MipsTranslator", "OP_NAMES", "generate_mips", "handler_name"]

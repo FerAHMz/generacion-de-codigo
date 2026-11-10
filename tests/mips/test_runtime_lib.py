@@ -224,3 +224,88 @@ def test_concat_traduce_con_jal_a_las_rutinas():
     assert "jal __itoa" in asm and "jal __btoa" in asm and "jal __concat" in asm
     assert asm.count("__concat:") == 1 and '__rt_null: .asciiz "null"' in asm
 
+
+# ---------------------------------------------------------------- exceptions.py
+
+from compiscript.ir.runtime import RuntimeErrorKind                   # noqa: E402
+from compiscript.mips.exceptions import ENTRY, HANDLER_SLOTS          # noqa: E402
+
+DIV0 = MESSAGES[RuntimeErrorKind.DIVISION_BY_ZERO]
+INDEX = MESSAGES[RuntimeErrorKind.INDEX_OUT_OF_BOUNDS]
+NULLREF = MESSAGES[RuntimeErrorKind.NULL_REFERENCE]
+
+TRY_PROGRAMS = {
+    "error_en_funcion_llamada": ("""
+        function dividir(a: integer, b: integer): integer { return a / b; }
+        function intermedia(x: integer): integer { let y: integer = dividir(x, 0); return y + 1; }
+        try { print("antes"); print(intermedia(10)); print("no llega"); }
+        catch (e) { print("capturado: " + e); }
+        print("después");
+    """, ["antes", "capturado: " + DIV0, "después"], 0),
+    "sin_try_termina_con_mensaje": ("""
+        let xs: integer[] = [1, 2, 3];
+        print("inicio");
+        print(xs[5]);
+        print("no llega");
+    """, ["inicio", "Error en tiempo de ejecución: " + INDEX], 1),
+    "try_anidado_y_relanzado_por_otro_error": ("""
+        let xs: integer[] = [1];
+        try {
+          try { print(xs[3]); } catch (e) { print("interno: " + e); print(10 / 0); }
+        } catch (e2) { print("externo: " + e2); }
+        print("fin");
+    """, ["interno: " + INDEX, "externo: " + DIV0, "fin"], 0),
+    "try_sin_error_desapila": ("""
+        try { print("ok"); } catch (e) { print("no"); }
+        let xs: integer[] = [1];
+        print(xs[2]);
+    """, ["ok", "Error en tiempo de ejecución: " + INDEX], 1),
+    "catch_en_funcion_recursiva": ("""
+        class Nodo { let v: integer; let sig: Nodo; }
+        function profundidad(n: Nodo, k: integer): integer {
+          if (k == 0) { return n.v; }
+          return profundidad(n, k - 1);
+        }
+        function seguro(k: integer): string {
+          let n: Nodo = null;
+          try { return "valor " + profundidad(n, k); } catch (e) { return "error: " + e; }
+        }
+        print(seguro(3)); print(seguro(0));
+    """, ["error: " + NULLREF, "error: " + NULLREF], 0),
+    "break_dentro_de_try": ("""
+        let i: integer = 0;
+        while (i < 10) { try { if (i == 2) { break; } i = i + 1; } catch (e) { print("no"); } }
+        print(i);
+        print(1 / 0);
+    """, ["2", "Error en tiempo de ejecución: " + DIV0], 1),
+}
+
+
+@pytest.mark.parametrize("mode", ["linear", "stack"])
+@pytest.mark.parametrize("name", sorted(TRY_PROGRAMS))
+def test_try_catch_en_mars(mars, name, mode):
+    src, expected, code = TRY_PROGRAMS[name]
+    res = compile_source(src, regalloc=mode)
+    assert res.ok, [str(e) for e in res.errors]
+    assert interp_run(res.program, res.table) == expected
+    out = mars(res.asm)
+    assert out.lines == expected and out.exit_code == code
+
+
+def test_push_handler_guarda_l_fp_y_sp():
+    asm = compile_source("try { print(1); } catch (e) { print(e); }").mips
+    sw = asm.find("sw")
+    assert ("$fp", "4($t8)") in sw and ("$sp", "8($t8)") in sw
+    assert ("$t8", "__htop") in sw
+    assert ("$t8", "$t8", str(-ENTRY)) in asm.find("addiu")        # pop_handler
+    assert ("$v0", "__exc_msg") in asm.find("lw")                   # e = exception
+    text = asm.text()
+    assert f"__hstack: .space {ENTRY * HANDLER_SLOTS}" in text
+    assert text.count("__raise:") == 1 and "jal __push" not in text
+
+
+def test_raise_restaura_fp_y_sp_y_salta_al_catch():
+    text = compile_source("let x: integer = 1 / 0;").asm
+    rutina = text[text.index("__raise:"):]
+    for ins in ("lw $fp, 4($t8)", "lw $sp, 8($t8)", "jr $t9", "li $v0, 17"):
+        assert ins in rutina
