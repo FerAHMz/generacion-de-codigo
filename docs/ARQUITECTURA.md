@@ -2,10 +2,12 @@
 
 ## Visión general
 
-El compilador hace **dos pasadas sobre el mismo árbol** de ANTLR. La primera
-(Proyecto 1) valida tipos y ámbitos y deja anotado cada nodo; la segunda
-(Proyecto 2) usa esas anotaciones para emitir código de tres direcciones (TAC).
-Si la primera pasada encuentra errores, la segunda no se ejecuta.
+El compilador hace **dos pasadas sobre el mismo árbol** de ANTLR y una
+**tercera fase sobre el TAC**. La primera pasada (Proyecto 1) valida tipos y
+ámbitos y deja anotado cada nodo; la segunda (Proyecto 2) usa esas anotaciones
+para emitir código de tres direcciones (TAC); la tercera (Proyecto 3) traduce
+el TAC a **MIPS32** y el `.asm` se ejecuta en el simulador **MARS 4.5**. Si la
+primera pasada encuentra errores, no se genera TAC ni MIPS.
 
 ```
  archivo.cps ──► Lexer/Parser (ANTLR) ──► árbol sintáctico
@@ -24,17 +26,30 @@ Si la primera pasada encuentra errores, la segunda no se ejecuta.
                          ▼
   Pasada 2   TACGenerator (compiscript/codegen/) ──► TACProgram (compiscript/ir/tac.py)
                                                          │
-          ┌──────────────────────┬───────────────────────┼─────────────────────┐
-          ▼                      ▼                       ▼                     ▼
-   Driver.py (CLI)       ide/ (Flask + web)     ir/interp.py (ejecuta)   ir/liveness.py
-   --tac --out --run     /api/compile /api/run                           (vida + linear scan,
-                                                                          base de getReg en MIPS)
+                               ┌─────────────────────────┼──────────────────────┐
+                               ▼                         ▼                      ▼
+                     ir/interp.py (oráculo)      ir/liveness.py         SymbolTable con
+                     ejecuta el TAC              intervalos de vida     direcciones y layouts
+                                                         │                      │
+                                                         ▼                      ▼
+  Fase 3     MipsTranslator (compiscript/mips/) ──► MipsProgram (.data + .text + runtime)
+             ├─ regs.py: getReg() (linear scan o pila)        │
+             ├─ calls.py / memory.py: marcos y variables       ▼
+             ├─ arith, control, data_structs, objects    mips/simulator.py
+             ├─ runtime_lib.py: __concat, __itoa, ...    run_mars(): MARS 4.5 sin GUI
+             └─ exceptions.py: pila de manejadores              │
+                                                                ▼
+          Driver.py (CLI)                       ide/ (Flask + web)
+          --tac --run --mips --out --regalloc   /api/compile (tac, mips) · /api/run (intérprete o MARS)
+          --simulate
 ```
 
 El punto de entrada para todo lo que consume TAC es `compile_source` /
 `compile_file` (`compiscript/codegen/__init__.py`), que devuelve un
 `CompileResult` con `errors`, `program` (`None` si hubo errores), `table` y
-`to_dict()` (el JSON que usa el IDE).
+`to_dict()` (el JSON que usa el IDE: `errors`, `tac`, `symbols`, `mips`). El
+MIPS se genera a pedido (`result.asm`, `result.mips`) con el modo de registros
+de `compile_source(src, regalloc="linear" | "stack")`.
 
 ## Módulos
 
@@ -50,10 +65,12 @@ El punto de entrada para todo lo que consume TAC es `compile_source` /
 | `compiscript/tree_viz.py` | Árbol en texto, LISP, JSON y Graphviz DOT/SVG. |
 | `compiscript/ir/` | Representación intermedia: cuádruplos (`tac.py`), temporales (`temps.py`), vida de temporales y linear scan (`liveness.py`), errores en ejecución (`runtime.py`) e intérprete (`interp.py`). |
 | `compiscript/codegen/` | Segunda pasada: `CodeGenBase` (`base.py`) y mixins de generación (`expressions`, `control_flow`, `functions`, `classes`) combinados en `TACGenerator`. |
-| `Driver.py` | Interfaz de línea de comandos (análisis, TAC, registros de activación y ejecución). |
+| `compiscript/mips/` | Tercera fase: TAC → MIPS32. Programa (`asm.py`), despacho (`translator.py`), `getReg()` (`regs.py`), variables (`memory.py`), llamadas (`calls.py`), traducción por grupo de instrucciones (`arith`, `control`, `data_structs`, `objects`), runtime (`runtime_lib.py`), excepciones (`exceptions.py`) y ejecución en MARS (`simulator.py`). Detalle en [MIPS.md](MIPS.md). |
+| `Driver.py` | Interfaz de línea de comandos (análisis, TAC, registros de activación, ejecución, MIPS y simulación en MARS). |
 | `ide/` | IDE web (Flask + CodeMirror). |
-| `tests/` | Batería de pruebas (pytest): `tests/test_*.py` (semántica), `tests/ir/` (TAC, tabla, temporales, intérprete) y `tests/tac/` (Driver, IDE y extremo a extremo). |
-| `examples/` | Programas válidos e inválidos usados por el IDE y los tests. |
+| `tests/` | Batería de pruebas (pytest): `tests/test_*.py` (semántica), `tests/ir/` (TAC, tabla, temporales, intérprete), `tests/tac/` (Driver, IDE y extremo a extremo del TAC) y `tests/mips/` (traducción, registros, llamadas, runtime, Driver/IDE y extremo a extremo en MARS). |
+| `examples/` | Programas válidos e inválidos usados por el IDE y los tests; `examples/mips/` cubre recursión, closures, clases, arreglos, strings, floats, switch y try/catch. |
+| `tools/` | `Mars4_5.jar` (`make mars`). |
 
 ## Sistema de tipos (`types.py`)
 
@@ -258,6 +275,63 @@ la fase de MIPS:
   mensaje queda como última línea de salida;
 * un límite de pasos (`max_steps`) detiene programas que no terminan.
 
+## Tercera fase: generación de MIPS (`compiscript/mips/`)
+
+`generate_mips(program, table, regalloc)` crea un `MipsTranslator` y recorre
+los cuádruplos una sola vez. Cada instrucción TAC `op` se despacha a un método
+`op_<nombre>` definido en un mixin (`translator.OP_NAMES`); los mixins pueden
+preparar `.data` antes de traducir con métodos `setup_*` (vtables, área
+global). Una instrucción sin traducción lanza `MipsNotImplemented`.
+
+| Pieza | Módulo | Qué decide |
+|---|---|---|
+| Programa | `asm.py` (`MipsProgram`) | `.data` (strings internados, `.float`, `.space`), `.text` y rutinas del runtime agregadas una sola vez al final |
+| `getReg()` | `regs.py` (`RegisterManager`) | registro o ranura de cada aparición de un temporal; linear scan por función y por clase (`$t`/`$s`, `$f`) o todo en pila |
+| Variables | `memory.py` | operando de cada `Var`: `__globals+off`, `off($fp)` o la cadena de static links |
+| Llamadas | `calls.py` | marco, prólogo/epílogo, área de argumentos, static link, `$t` vivos alrededor de `jal`, `jalr` en métodos |
+| Instrucciones | `arith.py`, `control.py`, `data_structs.py`, `objects.py` | secuencias MIPS de cada instrucción, con las revisiones de `runtime.checks_for(op)` |
+| Runtime | `runtime_lib.py` | rutinas en MIPS para `concat` y conversión a texto (`__concat`, `__itoa`, `__ftoa`, `__btoa`, `__alloc`) |
+| Excepciones | `exceptions.py` | pila de manejadores en `.data`, `push_handler`/`pop_handler`/`exception` en línea y `__raise` |
+| Simulación | `simulator.py` | `run_mars(asm)`: archivo temporal, `java -jar Mars4_5.jar nc ae2 se3 sm N`, JVM headless, salida limpia, código de salida y límite de pasos |
+
+### Runtime y convención de las rutinas
+
+Las rutinas reciben argumentos en `$a0`/`$a1` (float en `$f12`) y devuelven
+el resultado en `$v0`; solo pueden pisar `$a*`, `$v*`, `$t8`, `$t9` y los
+flotantes `$f0`, `$f2`, `$f12`. Así un `jal __concat` no obliga a guardar
+ningún temporal: los temporales viven en `$t0–$t7`, `$s0–$s7` y `$f4–$f11`,
+`$f16–$f28`. Una función hoja que usa una de estas instrucciones guarda `$ra`
+en una ranura extra de su marco (`RUNTIME_CALL_OPS`).
+
+`t = concat a, b` convierte a texto el operando que no es string (con la misma
+forma que `interp.to_text`: `true`/`false`, `null`, decimal, float como la
+syscall 2), guarda el texto de `a` en la pila mientras convierte `b` y llama a
+`__concat`, que reserva `len(a) + len(b) + 1` bytes en el heap con `sbrk`
+(redondeado a múltiplo de 4 para no desalinear los arreglos y objetos que se
+reserven después) y copia los dos strings.
+
+### Excepciones
+
+Sigue el modelo del intérprete (`Interpreter.raise_error`, LENGUAJE_INTERMEDIO
+§9.4). `push_handler L` apila (`L`, `$fp`, `$sp`) en `__hstack` (256
+entradas); `pop_handler` desapila. Las revisiones (`null`, índice, división
+entre cero) saltan con `j __raise` y el mensaje de `runtime.MESSAGES` en `$a0`.
+`__raise`:
+
+* sin manejador: imprime `Error en tiempo de ejecución: <mensaje>` y termina
+  con la syscall 17 (código 1), igual que la última línea del intérprete;
+* con manejador: lo desapila, deja el mensaje en `__exc_msg`, restaura `$fp` y
+  `$sp` (esto descarta de una vez todos los marcos de las funciones llamadas
+  dentro del `try`) y salta a `L`, donde `e = exception` lee `__exc_msg`.
+
+### Pruebas diferenciales
+
+El intérprete de TAC es el oráculo de la fase 3: `tests/mips/test_e2e.py`
+compila cada ejemplo en los modos `linear` y `stack`, lo ejecuta en MARS y
+exige la misma salida y el mismo código de salida que `interp.run`. Los floats
+de las pruebas usan valores exactos en binario (0.5, 2.25, …) porque MARS
+calcula en precisión simple y el intérprete en doble.
+
 ## Árbol sintáctico (`tree_viz.py`)
 
 El árbol de ANTLR se puede ver en cuatro formas: texto indentado (`--tree`),
@@ -282,5 +356,15 @@ representaciones gráficas se colapsan las cadenas de reglas con un solo hijo
 * Despacho dinámico por vtable para métodos (una variable `Animal` puede
   contener un `Perro`) y static link para closures (una función anidada nunca
   sobrevive al marco que la contiene).
+* **MIPS desde el TAC, no desde el árbol**: la fase 3 solo ve cuádruplos y la
+  tabla de símbolos con direcciones, así que el intérprete de TAC sirve de
+  oráculo para cada programa.
+* **Variables en memoria, temporales en registros**: las variables del
+  programa se leen y escriben en su dirección en cada acceso; solo los
+  temporales pasan por `getReg()`. Esto hace correcto el `catch` (ve el valor
+  de las variables al fallar) y los closures (leen por static link).
+* **Rutinas del runtime con registros acotados** en vez de guardar todo
+  alrededor de cada `jal`.
+* **MARS sin GUI y con la JVM headless** para que la batería no abra ventanas.
 * Los archivos generados por ANTLR se versionan para que el proyecto corra sin
   Java; `make grammar` los regenera si la gramática cambia.

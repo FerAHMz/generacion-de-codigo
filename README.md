@@ -12,13 +12,17 @@ Parte de las dos pasadas del Proyecto 2 sobre el mismo árbol:
 2. **Generación de código de tres direcciones (TAC)** en cuádruplos, con reciclaje de
    temporales y una tabla de símbolos extendida con direcciones, registros de
    activación y layout de objetos.
-
 3. **Generación de MIPS** (Proyecto 3, `compiscript/mips/`): secuencias de llamada y
    retorno, asignación de registros con `getReg()` (linear scan o solo pila) y
-   traducción de cada instrucción TAC. El `.asm` se ejecuta en MARS.
+   traducción de cada instrucción TAC. El runtime (strings, conversión a texto y `try/catch`) está escrito en MIPS.
+4. **Simulación**: el `.asm` se ejecuta en MARS sin GUI desde Python, el Driver
+   (`--simulate`) y el IDE (**Ejecutar en MARS**); las pruebas de extremo a
+   extremo comparan su salida con el intérprete de TAC en los dos modos de
+   registros.
 
-El diseño del lenguaje intermedio está en [docs/LENGUAJE_INTERMEDIO.md](docs/LENGUAJE_INTERMEDIO.md).
-Video del Proyecto 2: <https://youtu.be/PEBvcj3bur4>.
+El diseño del lenguaje intermedio está en [docs/LENGUAJE_INTERMEDIO.md](docs/LENGUAJE_INTERMEDIO.md)
+y la generación de MIPS en [docs/MIPS.md](docs/MIPS.md).
+Video del Proyecto 3: *(pendiente)*. Video del Proyecto 2: <https://youtu.be/PEBvcj3bur4>.
 
 **Integrantes:** Fernando Hernández · Felipe Aguilar · Fernando Rueda
 
@@ -31,12 +35,30 @@ make run F=program/program.cps   # analiza un archivo (.cps)
 .venv/bin/python Driver.py program/program.cps --tac       # imprime el TAC numerado
 .venv/bin/python Driver.py program/program.cps --runtime   # registros de activación y clases
 .venv/bin/python Driver.py program/program.cps --run       # ejecuta el TAC con el intérprete
+.venv/bin/python Driver.py program/program.cps --mips      # imprime el MIPS
+.venv/bin/python Driver.py program/program.cps --out prog.asm --regalloc stack   # guarda el .asm
+.venv/bin/python Driver.py program/program.cps --simulate  # ejecuta el MIPS en MARS
 make test                        # batería de tests (pytest)
 make ide                         # IDE web en http://localhost:8080
 ```
 
 Con el mismo entorno Docker del curso: `make docker-build && make docker-shell`.
 Guía completa en [docs/EJECUCION.md](docs/EJECUCION.md).
+
+### Generar MIPS y ejecutarlo en MARS desde Python
+
+```bash
+.venv/bin/python - <<'PY'
+from compiscript.codegen import compile_file
+from compiscript.mips.simulator import run_mars
+
+res = compile_file("examples/mips/08_try_catch.cps", regalloc="linear")   # o "stack"
+if res.ok:
+    out = run_mars(res.asm)          # MARS 4.5 sin GUI
+    print(out.stdout)
+    print("código de salida:", out.exit_code)
+PY
+```
 
 ### Generar y ejecutar TAC desde Python
 
@@ -90,20 +112,30 @@ compiscript/
   codegen/                  pipeline compile_source y generador TAC por mixins:
                             expressions, control_flow, functions y classes
   mips/                     TAC → MIPS32: programa (asm.py), despacho (translator.py),
-                            getReg (regs.py), variables (memory.py), llamadas (calls.py)
+                            getReg (regs.py), variables (memory.py), llamadas (calls.py),
+                            instrucciones (arith, control, data_structs, objects),
+                            runtime en MIPS (runtime_lib.py), try/catch (exceptions.py),
+                            ejecución en MARS (simulator.py)
   tree_viz.py               árbol en texto / LISP / JSON / Graphviz
-Driver.py                   línea de comandos (--tac, --out, --runtime, --run)
-ide/                        IDE web (Flask + CodeMirror): TAC, registros de activación y ejecución
+Driver.py                   línea de comandos (--tac, --out, --runtime, --run, --mips,
+                            --regalloc, --simulate)
+ide/                        IDE web (Flask + CodeMirror): TAC, MIPS, registros de activación
+                            y ejecución con el intérprete o en MARS
 tests/                      batería de tests por grupo de reglas (tests/ir: TAC, tabla e
-                            intérprete; tests/tac: Driver, IDE y extremo a extremo)
-examples/                   programas válidos (NN_*.cps) y con errores (err_*.cps)
+                            intérprete; tests/tac: Driver, IDE y extremo a extremo del TAC;
+                            tests/mips: traducción, registros, llamadas, runtime y extremo a
+                            extremo en MARS)
+examples/                   programas válidos (NN_*.cps) y con errores (err_*.cps);
+                            examples/mips/: un programa por tema para MIPS
+tools/                      Mars4_5.jar (make mars; no se versiona)
 docs/                       arquitectura, ejecución, lenguaje intermedio y rúbricas
 Dockerfile, commands/, antlr-4.13.1-complete.jar   entorno Docker del curso
 ```
 
 ## Documentación
 
-* [Generación de MIPS: llamadas, getReg() y cómo agregar instrucciones](docs/MIPS.md)
+* [Rúbrica del Proyecto 3: requisito → archivo → tests → demo](docs/RUBRICA_MIPS.md)
+* [Generación de MIPS: llamadas, getReg(), traducción, runtime, excepciones y MARS](docs/MIPS.md)
 * [Lenguaje intermedio: instrucciones, convenciones y esquemas](docs/LENGUAJE_INTERMEDIO.md)
 * [Arquitectura de la implementación](docs/ARQUITECTURA.md)
 * [Cómo ejecutar el compilador](docs/EJECUCION.md)
@@ -117,8 +149,8 @@ Dockerfile, commands/, antlr-4.13.1-complete.jar   entorno Docker del curso
 | Integrante | Porción | Estado |
 |---|---|---|
 | Fernando Hernández | Base del proyecto, programa MIPS y despacho por instrucción (`mips/asm.py`, `mips/translator.py`), segmento de datos y acceso a variables (`mips/memory.py`), `getReg()` con linear scan y modo pila (`mips/regs.py`), secuencias de llamada y retorno, prólogo y epílogo (`mips/calls.py`), pruebas `tests/mips/` de registros, memoria, llamadas y modos, `docs/MIPS.md`. | Terminado |
-| Felipe Aguilar | Traducción de instrucciones: aritmética entera y float, relacionales y saltos, `print`, arreglos, objetos y vtables. | Pendiente |
-| Fernando Rueda | Runtime en MIPS (strings, conversión a texto, excepciones), ejecución en MARS, Driver, IDE, pruebas de extremo a extremo y documentación final. | Pendiente |
+| Felipe Aguilar | Traducción de instrucciones: aritmética entera y float, relacionales y saltos, `print`, arreglos, objetos y vtables (`mips/arith.py`, `control.py`, `data_structs.py`, `objects.py`), pruebas `tests/mips/test_tr_*.py`, tabla de traducción en `docs/MIPS.md`. | Terminado |
+| Fernando Rueda | Ejecución en MARS desde Python (`mips/simulator.py`), runtime en MIPS para strings y conversión a texto (`mips/runtime_lib.py`), pila de manejadores y `__raise` para `try/catch` (`mips/exceptions.py`), Driver (`--mips`, `--out`, `--regalloc`, `--simulate`), IDE (pestaña MIPS, descarga del `.asm`, ejecución en MARS, modo de registros), batería `tests/mips/test_runtime_lib.py`, `test_driver_ide.py` y `test_e2e.py`, `examples/mips/` y documentación final (arquitectura, ejecución y rúbrica). | Terminado |
 
 ### Proyecto 2 — Generación de código intermedio
 

@@ -11,6 +11,10 @@ La tercera fase del compilador traduce el TAC (ver
 | `regs.py` | `RegisterManager`: `getReg()` con linear scan o solo pila |
 | `memory.py` | área global y acceso a variables (locales, parámetros, globales y no locales por static link) |
 | `calls.py` | marcos de pila, prólogo/epílogo y secuencias de llamada y retorno |
+| `arith.py`, `control.py`, `data_structs.py`, `objects.py` | traducción de cada instrucción (sección 5) |
+| `runtime_lib.py` | rutinas del runtime en MIPS y `concat` (sección 6) |
+| `exceptions.py` | pila de manejadores, `push_handler`/`pop_handler`/`exception` y `__raise` (sección 7) |
+| `simulator.py` | `run_mars()`: ejecuta un `.asm` en MARS sin GUI (sección 8) |
 
 ```python
 from compiscript.codegen import compile_source
@@ -259,7 +263,7 @@ extremo a extremo la marcan como skip.
 
 | Archivo | Qué valida |
 |---|---|
-| `tests/mips/test_translator_base.py` | programa MIPS, despacho, modo pila, constantes, `__raise` provisional |
+| `tests/mips/test_translator_base.py` | programa MIPS, despacho, modo pila, constantes, `__raise` sin manejador |
 | `tests/mips/test_memory.py` | área global, anchos por tipo, `fp` relativo, cadena de static links, error si falta un static link |
 | `tests/mips/test_regs.py` | linear scan (reuso en extremos, spill del que termina más tarde, preferencia `$s`), sin conflictos en todos los ejemplos, spill con 1 y 2 registros sin cambiar la salida |
 | `tests/mips/test_calls.py` | offsets de argumentos (boolean de 1 byte), static link con p − q + 1 enlaces, `$t` guardados alrededor de `jal`, `jalr` en métodos, prólogo/epílogo, recursión, recursión mutua, closures, balance de `$sp` y `$fp` en MARS |
@@ -413,3 +417,123 @@ __ok_13:
 
 Cada prueba de MARS corre en los modos `linear` y `stack` y compara con
 `interp.run`.
+
+---
+
+## 6. Runtime en MIPS (`runtime_lib.py`)
+
+Rutinas escritas a mano que el traductor agrega al final del `.text` (una sola
+vez, solo si se usan). Convención: argumentos en `$a0`/`$a1` (float en
+`$f12`), resultado en `$v0`; una rutina solo pisa `$a0–$a3`, `$v0`, `$v1`,
+`$t8`, `$t9`, `hi`/`lo` y `$f0`, `$f2`, `$f12`. Ningún temporal vive en esos
+registros, así que un `jal` a una rutina no obliga a guardar nada.
+
+| Rutina | Entrada | Salida |
+|---|---|---|
+| `__alloc` | `$a0` = bytes | `$v0` = bloque del heap (`sbrk`, redondeado a múltiplo de 4) |
+| `__concat` | `$a0`, `$a1` = strings (0 = `null`) | `$v0` = string nuevo con `a` seguido de `b` |
+| `__itoa` | `$a0` = integer | `$v0` = texto decimal (incluye `-2147483648`) |
+| `__ftoa` | `$f12` = float | `$v0` = texto con el formato de la syscall 2 (`2.5`, `3.0`, `-0.125`) |
+| `__btoa` | `$a0` = boolean | `$v0` = `"true"` / `"false"` |
+
+`__concat` mide los dos strings, reserva `len(a) + len(b) + 1` bytes con
+`sbrk` (múltiplo de 4, para que los arreglos y objetos que se reserven después
+sigan alineados a palabra) y copia byte a byte; un operando `null` se ve como
+`"null"`, igual que `interp.to_text`. `__itoa` trabaja con el valor en
+negativo para cubrir `-2^31`. `__ftoa` escribe la parte entera, un punto y
+hasta 7 cifras significativas redondeadas, sin ceros finales pero con al
+menos una cifra decimal (lo mismo que `Float.toString` de Java, que usa MARS
+en la syscall 2, para 10⁻³ ≤ |x| < 10⁷).
+
+### 6.1 `t = concat a, b`
+
+```
+        <texto de a en $v0>             # string: move $v0, a · integer: move $a0, a + jal __itoa
+                                        # float: mov.s $f12, a + jal __ftoa · boolean: jal __btoa
+                                        # null: la $v0, __rt_null
+        addiu $sp, $sp, -4
+        sw $v0, 0($sp)                  # texto de a (las rutinas pisan $a*/$v*)
+        <texto de b en $v0>
+        move $a1, $v0
+        lw $a0, 0($sp)
+        addiu $sp, $sp, 4
+        jal __concat
+        move t, $v0
+```
+
+`CONCAT` está en `RUNTIME_CALL_OPS`: una función hoja que concatena guarda
+`$ra` en su marco.
+
+## 7. Excepciones (`exceptions.py`)
+
+```
+__htop:    .word __hstack          # siguiente entrada libre
+__hstack:  .space 3072             # 256 entradas de (L, $fp, $sp)
+__exc_msg: .word 0                 # mensaje de la última excepción
+```
+
+| TAC | MIPS (en línea, solo `$t8`/`$t9`) |
+|---|---|
+| `push_handler L` | `lw $t8, __htop` · si está llena: `j __raise_uncaught` con "demasiados try anidados" · `la $t9, L` · `sw $t9, 0($t8)` · `sw $fp, 4($t8)` · `sw $sp, 8($t8)` · `addiu $t8, $t8, 12` · `sw $t8, __htop` |
+| `pop_handler` | `lw $t8, __htop` · `addiu $t8, $t8, -12` · `sw $t8, __htop` |
+| `e = exception` | `lw $v0, __exc_msg` · guardar en `e` |
+
+Cada revisión (§5.1) termina en `la $a0, __err_<tipo>` + `j __raise`:
+
+```
+__raise:
+        lw $t8, __htop
+        la $t9, __hstack
+        beq $t8, $t9, __raise_uncaught  # sin manejador
+        addiu $t8, $t8, -12             # desapilar
+        sw $t8, __htop
+        sw $a0, __exc_msg
+        move $v0, $a0
+        lw $fp, 4($t8)                  # marco de la función del try
+        lw $sp, 8($t8)
+        lw $t9, 0($t8)
+        jr $t9                          # al catch
+__raise_uncaught:                       # "Error en tiempo de ejecución: " + mensaje + '\n'
+        ...
+        li $a0, 1
+        li $v0, 17                      # termina con código 1
+        syscall
+```
+
+Restaurar `$fp`/`$sp` descarta de una vez los marcos de todas las funciones
+llamadas dentro del `try`, como `del self.frames[h.depth:]` en el intérprete.
+El `catch` ve las variables con el valor que tenían al fallar porque siempre
+están en memoria; al entrar al `catch` empieza un enunciado nuevo, así que no
+hay temporales vivos que recuperar. `return`, `break` y `continue` dentro de
+un `try` ya emiten sus `pop_handler` en el TAC.
+
+## 8. Ejecución en MARS (`simulator.py`)
+
+```python
+from compiscript.mips.simulator import run_mars
+res = run_mars(asm, steps=1_000_000)   # MarsResult
+res.stdout, res.exit_code, res.timeout, res.error
+```
+
+Escribe el `.asm` en un directorio temporal y corre
+`java -Djava.awt.headless=true -jar tools/Mars4_5.jar nc ae2 se3 sm <steps> programa.asm`
+(sin GUI y sin ícono de Java). Quita el ruido de MARS (aviso de límite de
+pasos, mensajes de error de ensamblado) y devuelve:
+
+| Campo | Valor |
+|---|---|
+| `stdout` | lo que imprimió el programa |
+| `exit_code` | 0, el de la syscall 17 (1 en un error sin `try`), 2 si no ensambla, 3 si falla la simulación |
+| `timeout` | `True` si se agotó el límite de pasos o el tiempo de reloj |
+| `error` | mensaje de MARS si no ensambló o falló |
+
+`mars_available()` indica si hay Java y jar (`$MARS_JAR` o `tools/Mars4_5.jar`).
+
+## 9. Pruebas del runtime, el Driver, el IDE y extremo a extremo
+
+| Archivo | Qué valida |
+|---|---|
+| `tests/mips/test_runtime_lib.py` | `simulator.py` (comando headless, limpieza de la salida, código de la syscall 17, límite de pasos, error de ensamblado, acentos de `runtime.MESSAGES`); cada rutina con `.asm` escrito a mano (`__itoa` con `-2^31`, `__ftoa` igual a la syscall 2, `__btoa`, `__concat` con `null`, `__alloc` alineado); que ninguna rutina pise registros con temporales; `concat` en programas; `try/catch` en MARS (error en una función llamada desde el `try`, anidados, sin error, recursión, `break` dentro del `try`, sin `try`) |
+| `tests/mips/test_driver_ide.py` | `--mips`, `--out x.asm`, `--regalloc`, `--simulate` (salida, error en ejecución, bucle infinito, sin MARS), error semántico sin `.asm`; `/api/compile` con `mips` y `regalloc`, `/api/run` con `engine: "mars"`, pestaña MIPS y botones |
+| `tests/mips/test_e2e.py` | cada `examples/NN_*.cps`, `examples/mips/*.cps` y `program/program.cps` en MARS == `interp.run` en `linear` y `stack`; casos por tema; fallidos: error de compilación → `asm is None`, error en ejecución sin `try` → mensaje y código ≠ 0, bucle infinito → `timeout` |
+
