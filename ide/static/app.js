@@ -31,7 +31,9 @@ print(factorial(5));
   const status = $("status"), errList = $("errors"), errCount = $("err-count");
   const symBody = document.querySelector("#symbols tbody"), treeBox = $("tree");
   const tacBox = $("tac"), runtimeBox = $("runtime"), outputBox = $("output");
-  let markers = [], timer = null;
+  const mipsBox = $("mips"), mipsInfo = $("mips-info"), downloadBtn = $("download"), regallocSel = $("regalloc");
+  let markers = [], timer = null, asmText = "";
+  try { regallocSel.value = localStorage.getItem("cps.regalloc") || "linear"; } catch (e) { /* sin storage */ }
 
   // --- pestañas -------------------------------------------------------------
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
@@ -70,7 +72,8 @@ print(factorial(5));
   }
 
   function compile(source) {
-    fetch("/api/compile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }) })
+    const regalloc = regallocSel.value;
+    fetch("/api/compile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source, regalloc }) })
       .then((r) => r.json()).then(renderCompile).catch((err) => console.error(err));
   }
 
@@ -89,6 +92,75 @@ print(factorial(5));
       }).join("\n");
     }
     renderRuntime(data.symbols);
+    renderMips(data);
+  }
+
+  // --- MIPS ------------------------------------------------------------------
+  const MIPS_DIRECTIVE = /^\s*\.(data|text|globl|word|asciiz|space|float|align|byte)\b/;
+  function highlightMips(line) {
+    const hash = line.indexOf("#");
+    const code = hash >= 0 ? line.slice(0, hash) : line;
+    const comment = hash >= 0 ? `<span class="muted">${escapeHtml(line.slice(hash))}</span>` : "";
+    let html;
+    const label = code.match(/^([A-Za-z_][\w.]*:)(.*)$/);
+    if (label) {
+      html = `<span class="${label[1].startsWith("__") ? "lbl" : "fn"}">${escapeHtml(label[1])}</span>` + highlightOperands(label[2]);
+    } else if (MIPS_DIRECTIVE.test(code)) {
+      html = `<span class="dir">${escapeHtml(code)}</span>`;
+    } else {
+      const m = code.match(/^(\s*)(\S+)(.*)$/);
+      html = m ? escapeHtml(m[1]) + `<span class="op">${escapeHtml(m[2])}</span>` + highlightOperands(m[3]) : escapeHtml(code);
+    }
+    return html + comment;
+  }
+  function highlightOperands(text) {
+    return escapeHtml(text).replace(/(\$[a-z0-9]+)/g, '<span class="reg">$1</span>');
+  }
+
+  function renderMips(data) {
+    asmText = data.mips && data.mips.length ? data.mips.join("\n") + "\n" : "";
+    downloadBtn.disabled = !asmText;
+    if (!asmText) {
+      const why = data.errors.length ? "Hay errores: no se generó MIPS."
+        : data.mips_error ? "Todavía sin traducción a MIPS: " + data.mips_error : "(sin código)";
+      mipsBox.innerHTML = `<span class="muted">${escapeHtml(why)}</span>`;
+      mipsInfo.textContent = "";
+      return;
+    }
+    mipsBox.innerHTML = data.mips.map(highlightMips).join("\n");
+    const n = data.mips.filter((l) => /^\s+[a-z]/.test(l.split("#")[0]) && !MIPS_DIRECTIVE.test(l)).length;
+    mipsInfo.textContent = `${n} instrucciones · modo ${data.regalloc}`;
+  }
+
+  downloadBtn.addEventListener("click", () => {
+    if (!asmText) return;
+    const url = URL.createObjectURL(new Blob([asmText], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "programa.asm";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  regallocSel.addEventListener("change", () => {
+    try { localStorage.setItem("cps.regalloc", regallocSel.value); } catch (e) { /* sin storage */ }
+    compile(editor.getValue());
+  });
+
+  function executeMars() {
+    outputBox.innerHTML = '<span class="muted">ejecutando en MARS…</span>';
+    document.querySelector('.tabs button[data-tab="output"]').click();
+    const body = JSON.stringify({ source: editor.getValue(), engine: "mars", regalloc: regallocSel.value });
+    fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+      .then((r) => r.json()).then((data) => {
+        if (!data.ok) { outputBox.innerHTML = '<span class="err">El programa tiene errores: no se genera MIPS.</span>'; return; }
+        if (data.exit_code === null) { outputBox.innerHTML = `<span class="err">${escapeHtml(data.error || "no se pudo ejecutar MARS")}</span>`; return; }
+        const lines = data.output.map(escapeHtml);
+        if (data.runtime_error) lines.push(`<span class="err">${escapeHtml(data.runtime_error)}</span>`);
+        if (data.error) lines.push(`<span class="err">${escapeHtml(data.error)}</span>`);
+        if (!lines.length) lines.push('<span class="muted">(sin salida)</span>');
+        lines.push(`<span class="muted">— MARS (${escapeHtml(data.regalloc)}) terminó con código ${data.exit_code}</span>`);
+        outputBox.innerHTML = lines.join("\n");
+      }).catch((err) => { outputBox.innerHTML = '<span class="err">error de conexión</span>'; console.error(err); });
   }
 
   function renderRuntime(symbols) {
@@ -189,6 +261,7 @@ print(factorial(5));
 
   $("run").addEventListener("click", run);
   $("exec").addEventListener("click", execute);
+  $("mars").addEventListener("click", executeMars);
   editor.on("change", () => { clearOutput(); if (!$("live").checked) return; clearTimeout(timer); timer = setTimeout(run, 500); });
   clearOutput();
   run();

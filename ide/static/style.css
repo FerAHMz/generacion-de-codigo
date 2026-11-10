@@ -68,3 +68,6 @@ pre.code .fn { color: #81d4fa; font-weight: 600; } pre.code .lbl { color: var(--
 
 @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); } .editor-pane { border-right: none; border-bottom: 1px solid var(--border); } }
 #output { white-space: pre-wrap; }
+pre.code .op { color: #81d4fa; } pre.code .reg { color: var(--warn); } pre.code .dir { color: var(--rule); }
+.tab-actions { display: flex; align-items: center; gap: .6rem; margin-bottom: .5rem; font-size: .85rem; }
+.tab-actions button:disabled { opacity: .5; cursor: default; }

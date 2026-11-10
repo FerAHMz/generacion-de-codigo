@@ -108,3 +108,74 @@ def test_driver_simulate_bucle_infinito(fuente, capsys):
     assert Driver.main([fuente("while (true) { }"), "--simulate", "--steps", "5000", "--quiet"]) == 1
     assert "límite de 5000" in capsys.readouterr().out
 
+
+# ---------------------------------------------------------------------------
+# IDE: /api/compile con MIPS y /api/run en MARS
+# ---------------------------------------------------------------------------
+
+from ide.app import app   # noqa: E402
+
+
+@pytest.fixture
+def client():
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
+
+
+def test_api_compile_incluye_mips(client):
+    data = client.post("/api/compile", json={"source": PROGRAMA}).get_json()
+    assert data["ok"] is True and data["regalloc"] == "linear" and data["mips_error"] is None
+    mips = "\n".join(data["mips"])
+    assert ".text" in mips and "main:" in mips and "fact:" in mips and "jal __concat" in mips
+
+
+def test_api_compile_respeta_el_modo_de_registros(client):
+    lin = client.post("/api/compile", json={"source": PROGRAMA, "regalloc": "linear"}).get_json()
+    stk = client.post("/api/compile", json={"source": PROGRAMA, "regalloc": "stack"}).get_json()
+    assert stk["regalloc"] == "stack" and lin["mips"] != stk["mips"]
+    assert client.post("/api/compile", json={"source": PROGRAMA, "regalloc": "x"}).get_json()["regalloc"] == "linear"
+
+
+def test_api_compile_con_errores_mips_vacio(client):
+    data = client.post("/api/compile", json={"source": 'let x: integer = "a";'}).get_json()
+    assert data["ok"] is False and data["mips"] == [] and data["tac"] == []
+
+
+def test_api_run_mars_con_errores_no_ejecuta(client):
+    data = client.post("/api/run", json={"source": "print(y);", "engine": "mars"}).get_json()
+    assert data["ok"] is False and data["exit_code"] is None and data["errors"]
+
+
+def test_api_run_mars_sin_mars(client, monkeypatch):
+    monkeypatch.setenv("MARS_JAR", "/no/existe/Mars4_5.jar")
+    data = client.post("/api/run", json={"source": PROGRAMA, "engine": "mars"}).get_json()
+    assert data["ok"] is True and data["exit_code"] is None and "make mars" in data["error"]
+
+
+def test_api_run_sin_engine_sigue_usando_el_interprete(client):
+    data = client.post("/api/run", json={"source": PROGRAMA}).get_json()
+    assert data == {"ok": True, "errors": [], "output": ["fact(5) = 120"], "runtime_error": None}
+
+
+@requires_mars
+@pytest.mark.parametrize("modo", ["linear", "stack"])
+def test_api_run_mars_ejecuta(client, modo):
+    data = client.post("/api/run", json={"source": PROGRAMA, "engine": "mars", "regalloc": modo}).get_json()
+    assert data["exit_code"] == 0 and data["output"] == ["fact(5) = 120"] and data["regalloc"] == modo
+
+
+@requires_mars
+def test_api_run_mars_error_en_ejecucion(client):
+    src = 'print("a"); let xs: integer[] = [1]; print(xs[4]);'
+    data = client.post("/api/run", json={"source": src, "engine": "mars"}).get_json()
+    assert data["output"] == ["a"] and data["exit_code"] == 1
+    assert data["runtime_error"] == "Error en tiempo de ejecución: índice fuera de rango"
+
+
+def test_index_tiene_pestana_mips_y_botones(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-tab="mips"' in html and 'id="download"' in html
+    assert 'id="mars"' in html and 'id="regalloc"' in html
+    js = client.get("/static/app.js").get_data(as_text=True)
+    assert "engine: \"mars\"" in js and "programa.asm" in js

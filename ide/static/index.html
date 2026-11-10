@@ -10,11 +10,16 @@
 </head>
 <body>
   <header>
-    <div class="brand">🧪 Compiscript IDE <span class="sub">análisis semántico y código intermedio</span></div>
+    <div class="brand">🧪 Compiscript IDE <span class="sub">análisis semántico, código intermedio y MIPS</span></div>
     <div class="toolbar">
       <select id="examples" title="Cargar ejemplo"><option value="">Ejemplos…</option></select>
       <button id="run" class="primary">▶ Compilar (Ctrl+Enter)</button>
       <button id="exec" title="Ejecuta el TAC con el intérprete">⚙ Ejecutar TAC</button>
+      <button id="mars" title="Ensambla y ejecuta el .asm en MARS 4.5">▶ Ejecutar en MARS</button>
+      <select id="regalloc" title="Asignación de registros del MIPS">
+        <option value="linear">registros: linear scan</option>
+        <option value="stack">registros: solo pila</option>
+      </select>
       <button id="svg">Árbol SVG</button>
       <label class="check"><input type="checkbox" id="live" checked> análisis en vivo</label>
       <span id="status" class="status"></span>
@@ -29,6 +34,7 @@
       <nav class="tabs">
         <button data-tab="errors" class="active">Errores <span id="err-count" class="badge">0</span></button>
         <button data-tab="tac">Código intermedio</button>
+        <button data-tab="mips">MIPS</button>
         <button data-tab="runtime">Registros de activación</button>
         <button data-tab="output">Salida</button>
         <button data-tab="symbols">Tabla de símbolos</button>
@@ -44,6 +50,13 @@
         </div>
       </div>
       <div id="tab-tac" class="tab"><pre id="tac" class="code"></pre></div>
+      <div id="tab-mips" class="tab">
+        <div class="tab-actions">
+          <button id="download" disabled>⬇ Descargar .asm</button>
+          <span id="mips-info" class="muted"></span>
+        </div>
+        <pre id="mips" class="code"></pre>
+      </div>
       <div id="tab-runtime" class="tab"><div id="runtime"></div></div>
       <div id="tab-output" class="tab"><pre id="output" class="code"></pre></div>
       <div id="tab-tree" class="tab"><div id="tree" class="tree"></div></div>
